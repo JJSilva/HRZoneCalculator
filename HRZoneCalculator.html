@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>HR Zone Summary</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/papaparse@5.3.2/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+  <div id="app" class="container py-5">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h1 class="card-title h4 mb-4 text-primary">HR Zone Summary</h1>
+
+        <div class="mb-3">
+          <label for="csvUpload" class="form-label">Upload CSV File</label>
+          <input type="file" id="csvUpload" class="form-control" @change="handleFileUpload" />
+        </div>
+
+        <div v-if="percentage !== null" class="mt-4">
+          <p><strong>Zone1 + Zone2 Minutes:</strong> {{ sumZone1and2 }}</p>
+          <p><strong>Zone3 to Zone10 Minutes:</strong> {{ sumZone3to10 }}</p>
+          <p><strong>Total Minutes:</strong> {{ totalMinutes }}</p>
+          <p><strong>% Zone1+2:</strong> {{ percentage.toFixed(2) }}%</p>
+          <p><strong>% Zone3+:</strong> {{ percentageZone3.toFixed(2) }}%</p>
+        </div>
+
+        <div class="row text-center mt-5">
+          <div class="col-md-4">
+            <h6>All Workouts (Combined)</h6>
+            <canvas id="pieCombined"></canvas>
+          </div>
+          <div class="col-md-4">
+            <h6>Bike Only</h6>
+            <canvas id="pieBike"></canvas>
+          </div>
+          <div class="col-md-4">
+            <h6>Run Only</h6>
+            <canvas id="pieRun"></canvas>
+          </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mt-5 mb-2">
+          <h5 class="mb-0">Parsed Workout Data</h5>
+          <button class="btn btn-sm btn-primary" @click="downloadCSV">Download CSV</button>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-striped table-bordered table-sm">
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Workout Type</th>
+                <th>Description</th>
+                <th v-for="z in 10">Z{{ z }} (min)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in parsedRows">
+                <td>{{ row.Title }}</td>
+                <td>{{ row.WorkoutType }}</td>
+                <td>{{ row.WorkoutDescription }}</td>
+                <td v-for="z in 10">{{ row[`Z${z}`] }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+
+    createApp({
+      data() {
+        return {
+          sumZone1and2: 0,
+          sumZone3to10: 0,
+          totalMinutes: 0,
+          percentage: null,
+          percentageZone3: null,
+          parsedRows: []
+        };
+      },
+      methods: {
+        parseWorkout(description) {
+          const zoneTotals = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`Z${i + 1}`, 0]));
+          if (!description) return zoneTotals;
+
+          description = description.replace(/ x \(/g, 'x(');
+          const loopMatches = [...description.matchAll(/(\d+)\s*x\s*\(([^)]+)\)/g)];
+
+          for (const match of loopMatches) {
+            const repeats = parseInt(match[1]);
+            const block = match[2].split("/");
+            block.forEach(part => {
+              const segment = part.trim().match(/(\d+)\s*minutes?(?:\s+in)?\s+Z(\d+)/i);
+              if (segment) {
+                const mins = parseInt(segment[1]);
+                const zone = 'Z' + segment[2];
+                if (zoneTotals[zone] !== undefined) {
+                  zoneTotals[zone] += mins * repeats;
+                }
+              }
+            });
+            description = description.replace(match[0], " ");
+          }
+
+          const flatMatches = [...description.matchAll(/(\d+)\s*minutes?(?:\s+in)?\s+Z(\d+)/gi)];
+          for (const match of flatMatches) {
+            const mins = parseInt(match[1]);
+            const zone = 'Z' + match[2];
+            if (zoneTotals[zone] !== undefined) {
+              zoneTotals[zone] += mins;
+            }
+          }
+
+          return zoneTotals;
+        },
+
+        handleFileUpload(event) {
+          const file = event.target.files[0];
+          if (!file) return;
+
+          Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            complete: (results) => {
+              this.parsedRows = [];
+
+              results.data.forEach(row => {
+                const parsedZones = this.parseWorkout(row.WorkoutDescription);
+                this.parsedRows.push({
+                  Title: row.Title || "Untitled",
+                  WorkoutType: row.WorkoutType || "",
+                  WorkoutDescription: row.WorkoutDescription || "",
+                  ...parsedZones
+                });
+              });
+
+              this.computeSummaries();
+              this.renderCharts();
+            }
+          });
+        },
+
+        computeSummaries() {
+          const sumZones = (rows) => {
+            const zones = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`Z${i + 1}`, 0]));
+            rows.forEach(r => {
+              for (let z = 1; z <= 10; z++) {
+                zones[`Z${z}`] += r[`Z${z}`] || 0;
+              }
+            });
+            return zones;
+          };
+
+          const all = sumZones(this.parsedRows);
+          const bikes = sumZones(this.parsedRows.filter(r => r.WorkoutType.toLowerCase() === 'bike'));
+          const runs = sumZones(this.parsedRows.filter(r => r.WorkoutType.toLowerCase() === 'run'));
+
+          this.renderPie("pieCombined", all, ['#4e73df', '#f6c23e']);
+          this.renderPie("pieBike", bikes, ['#36b9cc', '#f6c23e']);
+          this.renderPie("pieRun", runs, ['#1cc88a', '#f6c23e']);
+
+          this.sumZone1and2 = all.Z1 + all.Z2;
+          this.sumZone3to10 = Object.entries(all).filter(([z]) => !['Z1', 'Z2'].includes(z)).reduce((acc, [_, v]) => acc + v, 0);
+          this.totalMinutes = this.sumZone1and2 + this.sumZone3to10;
+          this.percentage = this.totalMinutes ? (this.sumZone1and2 / this.totalMinutes) * 100 : 0;
+          this.percentageZone3 = this.totalMinutes ? (this.sumZone3to10 / this.totalMinutes) * 100 : 0;
+        },
+
+        renderPie(id, zones, colors) {
+          const ctx = document.getElementById(id).getContext('2d');
+          if (this[id]) this[id].destroy();
+
+          const zone1and2 = (zones.Z1 || 0) + (zones.Z2 || 0);
+          const zone3plus = Object.entries(zones).filter(([z]) => !['Z1', 'Z2'].includes(z)).reduce((a, [_, v]) => a + v, 0);
+          const total = zone1and2 + zone3plus;
+
+          this[id] = new Chart(ctx, {
+            type: 'pie',
+            data: {
+              labels: ['Zone1+2', 'Zone3+'],
+              datasets: [{
+                data: [zone1and2, zone3plus],
+                backgroundColor: colors
+              }]
+            },
+            options: {
+              plugins: {
+                datalabels: {
+                  formatter: (value, context) => {
+                    const percentage = total ? (value / total) * 100 : 0;
+                    return percentage.toFixed(1) + '%';
+                  },
+                  color: '#fff',
+                  font: {
+                    weight: 'bold',
+                    size: 14
+                  }
+                }
+              }
+            },
+            plugins: [ChartDataLabels]
+          });
+        },
+
+        downloadCSV() {
+          const headers = ["Title", "WorkoutType", "WorkoutDescription", ...Array.from({ length: 10 }, (_, i) => `Z${i + 1}`)];
+          const rows = this.parsedRows.map(row => headers.map(h => row[h] ?? ""));
+          const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+
+          const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "parsed_workouts.csv";
+          a.click();
+        }
+      }
+    }).mount("#app");
+  </script>
+</body>
+</html>
