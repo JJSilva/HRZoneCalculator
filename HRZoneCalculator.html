@@ -21,25 +21,20 @@
           <input type="file" id="csvUpload" class="form-control" @change="handleFileUpload" />
         </div>
 
-        <div v-if="percentage !== null" class="mt-4">
-          <p><strong>Zone1 + Zone2 Minutes:</strong> {{ sumZone1and2 }}</p>
-          <p><strong>Zone3 to Zone10 Minutes:</strong> {{ sumZone3to10 }}</p>
-          <p><strong>Total Minutes:</strong> {{ totalMinutes }}</p>
-          <p><strong>% Zone1+2:</strong> {{ percentage.toFixed(2) }}%</p>
-          <p><strong>% Zone3+:</strong> {{ percentageZone3.toFixed(2) }}%</p>
-        </div>
-
         <div class="row text-center mt-5">
           <div class="col-md-4">
             <h6>All Workouts (Combined)</h6>
+            <p class="text-muted small">{{ recommendations.combined }}</p>
             <canvas id="pieCombined"></canvas>
           </div>
           <div class="col-md-4">
             <h6>Bike Only</h6>
+            <p class="text-muted small">{{ recommendations.bike }}</p>
             <canvas id="pieBike"></canvas>
           </div>
           <div class="col-md-4">
             <h6>Run Only</h6>
+            <p class="text-muted small">{{ recommendations.run }}</p>
             <canvas id="pieRun"></canvas>
           </div>
         </div>
@@ -79,12 +74,13 @@
     createApp({
       data() {
         return {
-          sumZone1and2: 0,
-          sumZone3to10: 0,
-          totalMinutes: 0,
-          percentage: null,
-          percentageZone3: null,
-          parsedRows: []
+          parsedRows: [],
+          recommendations: {
+            combined: '',
+            bike: '',
+            run: ''
+          },
+          charts: {}
         };
       },
       methods: {
@@ -103,9 +99,7 @@
               if (segment) {
                 const mins = parseInt(segment[1]);
                 const zone = 'Z' + segment[2];
-                if (zoneTotals[zone] !== undefined) {
-                  zoneTotals[zone] += mins * repeats;
-                }
+                zoneTotals[zone] += mins * repeats;
               }
             });
             description = description.replace(match[0], " ");
@@ -115,9 +109,7 @@
           for (const match of flatMatches) {
             const mins = parseInt(match[1]);
             const zone = 'Z' + match[2];
-            if (zoneTotals[zone] !== undefined) {
-              zoneTotals[zone] += mins;
-            }
+            zoneTotals[zone] += mins;
           }
 
           return zoneTotals;
@@ -131,79 +123,81 @@
             header: true,
             skipEmptyLines: true,
             complete: (results) => {
-              this.parsedRows = [];
-
-              results.data.forEach(row => {
+              this.parsedRows = results.data.map(row => {
                 const parsedZones = this.parseWorkout(row.WorkoutDescription);
-                this.parsedRows.push({
+                return {
                   Title: row.Title || "Untitled",
                   WorkoutType: row.WorkoutType || "",
                   WorkoutDescription: row.WorkoutDescription || "",
                   ...parsedZones
-                });
+                };
               });
 
-              this.computeSummaries();
-              this.renderCharts();
+              this.renderAllCharts();
             }
           });
         },
 
-        computeSummaries() {
-          const sumZones = (rows) => {
-            const zones = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`Z${i + 1}`, 0]));
-            rows.forEach(r => {
-              for (let z = 1; z <= 10; z++) {
-                zones[`Z${z}`] += r[`Z${z}`] || 0;
-              }
-            });
-            return zones;
-          };
-
-          const all = sumZones(this.parsedRows);
-          const bikes = sumZones(this.parsedRows.filter(r => r.WorkoutType.toLowerCase() === 'bike'));
-          const runs = sumZones(this.parsedRows.filter(r => r.WorkoutType.toLowerCase() === 'run'));
-
-          this.renderPie("pieCombined", all, ['#4e73df', '#f6c23e']);
-          this.renderPie("pieBike", bikes, ['#36b9cc', '#f6c23e']);
-          this.renderPie("pieRun", runs, ['#1cc88a', '#f6c23e']);
-
-          this.sumZone1and2 = all.Z1 + all.Z2;
-          this.sumZone3to10 = Object.entries(all).filter(([z]) => !['Z1', 'Z2'].includes(z)).reduce((acc, [_, v]) => acc + v, 0);
-          this.totalMinutes = this.sumZone1and2 + this.sumZone3to10;
-          this.percentage = this.totalMinutes ? (this.sumZone1and2 / this.totalMinutes) * 100 : 0;
-          this.percentageZone3 = this.totalMinutes ? (this.sumZone3to10 / this.totalMinutes) * 100 : 0;
+        sumZones(rows) {
+          const zones = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`Z${i + 1}`, 0]));
+          rows.forEach(r => {
+            for (let z = 1; z <= 10; z++) {
+              zones[`Z${z}`] += r[`Z${z}`] || 0;
+            }
+          });
+          return zones;
         },
 
-        renderPie(id, zones, colors) {
+        renderAllCharts() {
+          const all = this.sumZones(this.parsedRows);
+          const bike = this.sumZones(this.parsedRows.filter(r => r.WorkoutType.toLowerCase() === 'bike'));
+          const run = this.sumZones(this.parsedRows.filter(r => r.WorkoutType.toLowerCase() === 'run'));
+
+          this.renderPie("pieCombined", all, ['#4e73df', '#f6c23e'], "combined");
+          this.renderPie("pieBike", bike, ['#36b9cc', '#f6c23e'], "bike");
+          this.renderPie("pieRun", run, ['#1cc88a', '#f6c23e'], "run");
+        },
+
+        renderPie(id, zones, colors, key) {
           const ctx = document.getElementById(id).getContext('2d');
-          if (this[id]) this[id].destroy();
+          if (this.charts[id]) this.charts[id].destroy();
 
-          const zone1and2 = (zones.Z1 || 0) + (zones.Z2 || 0);
-          const zone3plus = Object.entries(zones).filter(([z]) => !['Z1', 'Z2'].includes(z)).reduce((a, [_, v]) => a + v, 0);
-          const total = zone1and2 + zone3plus;
+          const z1 = zones.Z1 || 0;
+          const z2 = zones.Z2 || 0;
+          const z1and2 = z1 + z2;
+          const z3plus = Object.entries(zones).filter(([z]) => !['Z1', 'Z2'].includes(z)).reduce((acc, [_, v]) => acc + v, 0);
+          const total = z1and2 + z3plus;
 
-          this[id] = new Chart(ctx, {
+          const target = Math.round(total * 0.8);
+          const delta = target - z1and2;
+          const actualPct = Math.round((z1and2 / total) * 100);
+
+          if (total === 0) {
+            this.recommendations[key] = "No data";
+          } else if (actualPct === 80) {
+            this.recommendations[key] = "✅ Zone1+2 is right on target (80%)";
+          } else {
+            this.recommendations[key] = `🎯 To reach 80% Zone1+2: ${delta >= 0 ? '+' : ''}${delta} minutes ${delta >= 0 ? 'needed' : 'to reduce'}`;
+          }
+
+          this.charts[id] = new Chart(ctx, {
             type: 'pie',
             data: {
               labels: ['Zone1+2', 'Zone3+'],
               datasets: [{
-                data: [zone1and2, zone3plus],
+                data: [z1and2, z3plus],
                 backgroundColor: colors
               }]
             },
             options: {
               plugins: {
                 datalabels: {
-                  formatter: (value, context) => {
-                    const percentage = total ? (value / total) * 100 : 0;
-                    return percentage.toFixed(1) + '%';
+                  formatter: (val, ctx) => {
+                    const percent = (val / total) * 100;
+                    return percent.toFixed(1) + '%';
                   },
                   color: '#fff',
-                  font: {
-                    weight: 'bold',
-                    size: 14
-                  }
+                  font: { weight: 'bold', size: 14 }
                 }
               }
             },
